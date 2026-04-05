@@ -15,3 +15,23 @@ Standalone bridge for Yandex Music now playing.
 - `YM_PUSH_TTL` (default `45`)
 - `YM_QUEUE_CACHE_TTL` (default `15`)
 - `YM_LOG_LEVEL` (default `INFO`)
+
+```
+services:
+  yandex-music-bridge:
+    image: ghcr.io/druidblack/yandex-music-bridge:latest
+    container_name: yandex-music-bridge
+    environment:
+      - TZ=Europe/Moscow
+      - YM_TOKEN=AgAAAAACO3_345345
+      - YM_API_KEY=change-me
+      - YM_PORT=9980
+      - YM_LANGUAGE=ru
+      - YM_ENABLE_YNISON=true
+      - YM_PUSH_TTL=45
+      - YM_QUEUE_CACHE_TTL=15
+      - YM_LOG_LEVEL=INFO
+    ports:
+      - 9980:9980
+    restart: unless-stopped
+```
