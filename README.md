@@ -2,11 +2,13 @@
 
 Standalone bridge for Yandex Music now playing.
 
-You can get a token for Yandex using https://chromewebstore.google.com/detail/yandex-music-token/lcbjeookjibfhjjopieifgjnhlegmkib
+An easy way to get a token. You can get a token for Yandex using https://chromewebstore.google.com/detail/yandex-music-token/lcbjeookjibfhjjopieifgjnhlegmkib
 
 <img width="516" height="357" alt="image" src="https://github.com/user-attachments/assets/de9111ee-3ca4-4ffa-80d7-f1dadc1c5043" />
 
 Copy the token (Скопировать токен)
+
+All available ways to get a token https://yandex-music.readthedocs.io/en/main/token.html
 
 ## Endpoints
 - `GET /health`
