@@ -10,6 +10,8 @@ Copy the token (Скопировать токен)
 
 All available ways to get a token https://yandex-music.readthedocs.io/en/main/token.html
 
+The playback status cannot be obtained from the **smart speakers of Yandex** and **Yandex Navigator**.
+
 ## Endpoints
 - `GET /health`
 - `GET /now-playing`
