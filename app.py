@@ -44,14 +44,26 @@ def build_cover_url(track: Any, size: str = "300x300") -> Optional[str]:
     return uri if uri.startswith("http") else f"https://{uri}"
 
 
+def choose_player_id(*values: Any) -> Optional[str]:
+    for value in values:
+        if value is None:
+            continue
+        s = str(value).strip()
+        if s:
+            return s
+    return None
+
+
 def track_to_payload(track: Any, *, progress_ms: Optional[int] = None, paused: Optional[bool] = None,
                      context_type: Optional[str] = None, queue_id: Optional[str] = None,
-                     source: Optional[str] = None) -> dict[str, Any]:
+                     source: Optional[str] = None, player_id: Optional[str] = None,
+                     device_id: Optional[str] = None) -> dict[str, Any]:
     artists_list = [a.name for a in (getattr(track, "artists", None) or []) if getattr(a, "name", None)]
     album_title = None
     albums = getattr(track, "albums", None)
     if albums:
         album_title = getattr(albums[0], "title", None)
+    resolved_player_id = choose_player_id(player_id, queue_id, device_id, getattr(track, "id", None))
     return {
         "title": getattr(track, "title", None),
         "artists": ", ".join(artists_list) if artists_list else None,
@@ -65,6 +77,8 @@ def track_to_payload(track: Any, *, progress_ms: Optional[int] = None, paused: O
         "explicit": getattr(track, "explicit", None),
         "context_type": context_type,
         "queue_id": queue_id,
+        "player_id": resolved_player_id,
+        "device_id": device_id,
         "source": source,
         "timestamp": time.time(),
     }
@@ -248,12 +262,16 @@ class YnisonWatcher:
         if track is None:
             self._on_update(None)
             return
+        version = q.get("version") or status.get("version") or {}
+        resolved_device_id = choose_player_id(version.get("device_id"), q.get("entity_id"))
         update = track_to_payload(
             track,
             progress_ms=status.get("progress_ms"),
             paused=status.get("paused"),
             context_type=q.get("entity_type"),
             queue_id=q.get("entity_id"),
+            player_id=choose_player_id(q.get("entity_id"), version.get("device_id"), f"ynison:{track_id}"),
+            device_id=resolved_device_id,
             source="ynison",
         )
         self._on_update(update)
@@ -275,7 +293,7 @@ class YandexMusicBridge:
         self._started = False
         self._last_push: Optional[dict[str, Any]] = None
         self._last_push_ts: float = 0.0
-        self._last_queue: Optional[dict[str, Any]] = None
+        self._last_queues: list[dict[str, Any]] = []
         self._last_queue_ts: float = 0.0
         self._last_data: Optional[dict[str, Any]] = None
         self._last_data_source: Optional[str] = None
@@ -324,6 +342,7 @@ class YandexMusicBridge:
         self._update_ynison_watchdog(data)
         if data is None:
             LOGGER.debug("Ynison push: clear state")
+            self._last_push = None
             return
         LOGGER.debug("Ynison push: %s - %s", data.get("artists"), data.get("title"))
         self._last_push = dict(data)
@@ -408,11 +427,13 @@ class YandexMusicBridge:
             if reason:
                 await self._restart_ynison(reason)
 
-    def _fetch_now_playing_pull_sync(self) -> Optional[dict[str, Any]]:
+    def _fetch_players_pull_sync(self) -> list[dict[str, Any]]:
         try:
             queues = self.client.queues_list()
             if not queues:
-                return None
+                return []
+            results: list[dict[str, Any]] = []
+            seen_ids: set[str] = set()
             for qi in list(queues):
                 qid = getattr(qi, "id", None) or getattr(qi, "queue_id", None)
                 q = None
@@ -441,74 +462,123 @@ class YandexMusicBridge:
                 if not track:
                     continue
                 context_type = getattr(getattr(q, "context", None), "type", None)
-                return track_to_payload(track, context_type=context_type, queue_id=str(getattr(q, "id", None) or qid), source="queues")
-            return None
+                player_id = choose_player_id(getattr(q, "id", None), qid, getattr(getattr(q, "context", None), "id", None), getattr(track, "id", None))
+                if player_id is None or player_id in seen_ids:
+                    continue
+                seen_ids.add(player_id)
+                results.append(track_to_payload(
+                    track,
+                    context_type=context_type,
+                    queue_id=str(getattr(q, "id", None) or qid) if (getattr(q, "id", None) or qid) is not None else None,
+                    player_id=player_id,
+                    device_id=str(getattr(q, "id", None) or qid) if (getattr(q, "id", None) or qid) is not None else None,
+                    source="queues",
+                ))
+            return results
         except Exception as e:
             self._last_error = str(e)
             LOGGER.debug("queues pull failed: %r", e)
-            return None
+            return []
 
-    async def _fetch_queue_if_needed(self) -> Optional[dict[str, Any]]:
+    async def _fetch_players_if_needed(self) -> list[dict[str, Any]]:
         now = time.monotonic()
-        if self._last_queue is not None and (now - self._last_queue_ts) <= self.queue_cache_ttl:
-            return self._last_queue
+        if self._last_queues and (now - self._last_queue_ts) <= self.queue_cache_ttl:
+            return list(self._last_queues)
         async with self._queue_lock:
             now = time.monotonic()
-            if self._last_queue is not None and (now - self._last_queue_ts) <= self.queue_cache_ttl:
-                return self._last_queue
+            if self._last_queues and (now - self._last_queue_ts) <= self.queue_cache_ttl:
+                return list(self._last_queues)
             loop = asyncio.get_running_loop()
-            data = await loop.run_in_executor(None, self._fetch_now_playing_pull_sync)
-            self._last_queue = data
+            data = await loop.run_in_executor(None, self._fetch_players_pull_sync)
+            self._last_queues = list(data)
             self._last_queue_ts = time.monotonic()
-            if data is not None:
-                self._last_data = dict(data)
+            if data:
+                self._last_data = dict(data[0])
                 self._last_data_source = "queues"
-            return data
+            return list(data)
 
-    async def get_snapshot(self) -> dict[str, Any]:
+    def _merge_players(self, push_data: Optional[dict[str, Any]], queue_players: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        merged: list[dict[str, Any]] = []
+        seen: set[str] = set()
+
+        def add_player(player: Optional[dict[str, Any]]) -> None:
+            if not player:
+                return
+            player_id = choose_player_id(player.get("player_id"), player.get("queue_id"), player.get("device_id"), player.get("track_id"))
+            if not player_id:
+                return
+            if player_id in seen:
+                return
+            clone = dict(player)
+            clone["player_id"] = player_id
+            seen.add(player_id)
+            merged.append(clone)
+
+        add_player(push_data)
+        for player in queue_players:
+            add_player(player)
+        return merged
+
+    def _choose_primary(self, players: list[dict[str, Any]]) -> Optional[dict[str, Any]]:
+        if not players:
+            return None
+        def rank(player: dict[str, Any]) -> tuple[int, int, float]:
+            source = str(player.get("source") or "")
+            paused = bool(player.get("paused"))
+            ts = float(player.get("timestamp") or 0.0)
+            source_rank = 0 if source == "ynison" else 1
+            paused_rank = 1 if paused else 0
+            return (source_rank, paused_rank, -ts)
+        players_sorted = sorted(players, key=rank)
+        return players_sorted[0] if players_sorted else None
+
+    async def get_players_snapshot(self) -> dict[str, Any]:
         now = time.monotonic()
         push_age = (now - self._last_push_ts) if self._last_push_ts else None
         stale_reason = self._get_ynison_stale_reason()
         if stale_reason:
             asyncio.create_task(self._restart_ynison(stale_reason))
+
+        push_player = None
         if self.enable_ynison and self._last_push is not None and push_age is not None and push_age <= self.push_ttl and not stale_reason:
-            return {
-                "ok": True,
-                "source": "ynison",
-                "fresh": True,
-                "push_age": push_age,
-                "data": self._last_push,
-            }
-        queue_data = await self._fetch_queue_if_needed()
-        if queue_data is not None:
-            return {
-                "ok": True,
-                "source": "queues",
-                "fresh": True,
-                "push_age": push_age,
-                "data": queue_data,
-            }
-        if self._last_push is not None and push_age is not None and push_age <= (self.push_ttl * 2.0):
-            return {
-                "ok": True,
-                "source": "ynison-cache",
-                "fresh": False,
-                "push_age": push_age,
-                "data": self._last_push,
-            }
+            push_player = dict(self._last_push)
+            push_player.setdefault("player_id", choose_player_id(push_player.get("player_id"), push_player.get("queue_id"), push_player.get("device_id"), push_player.get("track_id")))
+
+        queue_players = await self._fetch_players_if_needed()
+        players = self._merge_players(push_player, queue_players)
+        primary = self._choose_primary(players)
+        primary_source = primary.get("source") if primary else ("ynison" if push_player else ("queues" if queue_players else "none"))
+        fresh = bool(players)
+
         return {
             "ok": True,
-            "source": "none",
-            "fresh": False,
+            "source": primary_source,
+            "fresh": fresh,
             "push_age": push_age,
-            "data": None,
+            "players_count": len(players),
+            "primary": primary,
+            "data": players,
+        }
+
+    async def get_snapshot(self) -> dict[str, Any]:
+        players_snap = await self.get_players_snapshot()
+        primary = players_snap.get("primary")
+        return {
+            "ok": True,
+            "source": players_snap.get("source"),
+            "fresh": players_snap.get("fresh"),
+            "push_age": players_snap.get("push_age"),
+            "players_count": players_snap.get("players_count"),
+            "data": primary,
         }
 
     async def get_health(self) -> dict[str, Any]:
         snap = await self.get_snapshot()
+        players_snap = await self.get_players_snapshot()
         return {
             "ok": True,
             "service": "yandex-music-bridge",
+            "version": 2,
             "ynison_enabled": self.enable_ynison,
             "ynison_connected": self.ynison is not None,
             "last_push_age": (time.monotonic() - self._last_push_ts) if self._last_push_ts else None,
@@ -516,7 +586,9 @@ class YandexMusicBridge:
             "last_data_source": self._last_data_source,
             "stale_reason": self._get_ynison_stale_reason(),
             "last_error": self._last_error,
+            "players_count": players_snap.get("players_count"),
             "snapshot": snap,
+            "players_snapshot": players_snap,
         }
 
 
@@ -535,6 +607,13 @@ def require_api_key(handler):
 async def now_playing_handler(request: web.Request) -> web.Response:
     bridge: YandexMusicBridge = request.app["bridge"]
     snap = await bridge.get_snapshot()
+    return web.json_response(snap)
+
+
+@require_api_key
+async def players_handler(request: web.Request) -> web.Response:
+    bridge: YandexMusicBridge = request.app["bridge"]
+    snap = await bridge.get_players_snapshot()
     return web.json_response(snap)
 
 
@@ -562,6 +641,7 @@ def build_app() -> web.Application:
     app.on_cleanup.append(on_cleanup)
     app.router.add_get("/health", health_handler)
     app.router.add_get("/now-playing", now_playing_handler)
+    app.router.add_get("/players", players_handler)
     return app
 
 
