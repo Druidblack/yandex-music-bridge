@@ -27,6 +27,11 @@ def env_bool(name: str, default: bool) -> bool:
     return val.strip().lower() in ("1", "true", "yes", "on")
 
 
+def env_csv(name: str) -> list[str]:
+    val = os.getenv(name, "")
+    return [item.strip() for item in val.split(",") if item.strip()]
+
+
 def normalize_track_id(value: Any) -> Optional[str]:
     if not value:
         return None
@@ -400,13 +405,18 @@ class LocalStationConnection:
 
 
 class LocalStationDiscovery:
-    def __init__(self, on_add: Callable[[dict[str, Any]], None]):
+    def __init__(self, on_add: Callable[[dict[str, Any]], None], interfaces: Optional[list[str]] = None):
         self.on_add = on_add
+        self.interfaces = interfaces or []
         self.zc: Optional[Zeroconf] = None
         self.browser = None
 
     def start(self) -> None:
-        self.zc = Zeroconf()
+        zeroconf_kwargs: dict[str, Any] = {}
+        if self.interfaces:
+            zeroconf_kwargs["interfaces"] = self.interfaces
+            LOGGER.info("Local Yandex Station discovery will use Zeroconf interfaces: %s", ", ".join(self.interfaces))
+        self.zc = Zeroconf(**zeroconf_kwargs)
         self.browser = ServiceBrowser(self.zc, "_yandexio._tcp.local.", handlers=[self._handler])
 
     def stop(self) -> None:
@@ -493,6 +503,7 @@ class YandexAudioBridge:
         self.enable_ynison = env_bool("YM_ENABLE_YNISON", True)
         self.enable_music = env_bool("YM_ENABLE_MUSIC", True)
         self.enable_stations = env_bool("YM_ENABLE_STATIONS", True)
+        self.zeroconf_interfaces = env_csv("YM_ZEROCONF_INTERFACES")
         self.push_ttl = float(os.getenv("YM_PUSH_TTL", "45"))
         self.player_ttl = float(os.getenv("YM_PLAYER_TTL", "180"))
         self.queue_cache_ttl = float(os.getenv("YM_QUEUE_CACHE_TTL", "3"))
@@ -526,7 +537,7 @@ class YandexAudioBridge:
                 self.ynison = YnisonWatcher(self.token, self.client, self._handle_music_push)
                 self.ynison.start()
         if self.enable_stations:
-            self.discovery = LocalStationDiscovery(self._handle_station_found)
+            self.discovery = LocalStationDiscovery(self._handle_station_found, self.zeroconf_interfaces)
             self.discovery.start()
             LOGGER.info("Local Yandex Station discovery started")
         self._started = True
