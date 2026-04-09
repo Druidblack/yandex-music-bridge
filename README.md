@@ -1,6 +1,8 @@
 # Yandex Music Bridge
 
-Standalone bridge for Yandex Music now playing.
+We receive the Yandex music playback status as well as from smart speakers that are on the same local network as the program being launched.
+
+it is necessary for https://github.com/FoxxMD/multi-scrobbler
 
 An easy way to get a token. You can get a token for Yandex using https://chromewebstore.google.com/detail/yandex-music-token/lcbjeookjibfhjjopieifgjnhlegmkib
 
@@ -10,21 +12,11 @@ Copy the token (Скопировать токен)
 
 All available ways to get a token https://yandex-music.readthedocs.io/en/main/token.html
 
-The playback status cannot be obtained from the **smart speakers of Yandex** and **Yandex Navigator**.
+The playback status cannot be obtained from the **Yandex Navigator**.
 
-## Endpoints
-- `GET /health`
-- `GET /now-playing`
+YM_STEREO_GROUPS=L015A0B0076GRV|L11ZCV000SV8AV - if there is a stereo pair
 
-## Env
-- `YM_TOKEN` (required)
-- `YM_API_KEY` (optional, protects local endpoints)
-- `YM_PORT` (default `9980`)
-- `YM_LANGUAGE` (default `ru`)
-- `YM_ENABLE_YNISON` (default `true`)
-- `YM_PUSH_TTL` (default `45`)
-- `YM_QUEUE_CACHE_TTL` (default `15`)
-- `YM_LOG_LEVEL` (default `INFO`)
+YM_ZEROCONF_INTERFACES=192.168.1.161 - host address
 
 ```
 services:
@@ -41,6 +33,7 @@ services:
       - YM_QUEUE_CACHE_TTL=3
       - YM_PLAYER_TTL=180
       - YM_STEREO_GROUPS=L015A0B0076GRV|L11ZCV000SV8AV
+      - YM_ZEROCONF_INTERFACES=192.168.1.161
     network_mode: host
     restart: unless-stopped
 ```
