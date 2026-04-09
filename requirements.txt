@@ -1,2 +1,3 @@
 aiohttp>=3.9
 yandex-music>=2.2.0
+zeroconf>=0.132.2
