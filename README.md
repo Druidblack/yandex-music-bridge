@@ -32,16 +32,15 @@ services:
     image: ghcr.io/druidblack/yandex-music-bridge:latest
     container_name: yandex-music-bridge
     environment:
-      - TZ=Europe/Moscow
-      - YM_TOKEN=AgAAAAACO3_345345
+      - YM_TOKEN=put-your-yandex-music-token-here
       - YM_API_KEY=change-me
       - YM_PORT=9980
-      - YM_LANGUAGE=ru
+      - YM_ENABLE_MUSIC=true
       - YM_ENABLE_YNISON=true
-      - YM_PUSH_TTL=45
-      - YM_QUEUE_CACHE_TTL=15
-      - YM_LOG_LEVEL=INFO
-    ports:
-      - 9980:9980
+      - YM_ENABLE_STATIONS=true
+      - YM_QUEUE_CACHE_TTL=3
+      - YM_PLAYER_TTL=180
+      - YM_STEREO_GROUPS=L015A0B0076GRV|L11ZCV000SV8AV
+    network_mode: host
     restart: unless-stopped
 ```
