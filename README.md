@@ -38,6 +38,7 @@ services:
       - YM_DESKTOP_PLAYERS=Основной ПК@192.168.1.95:19222,Ноутбук@192.168.1.96:19222
       - YM_DESKTOP_POLL_INTERVAL=20
       - YM_DESKTOP_RETRY_INTERVAL=10
+      - YM_MULTISCROBBLER_PAUSE_COMPAT=true
     network_mode: host
     restart: unless-stopped
 ```
