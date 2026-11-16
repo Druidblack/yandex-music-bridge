@@ -34,6 +34,7 @@ services:
       - YM_PLAYER_TTL=180
       - YM_STEREO_GROUPS=L015A0B0076GRV|L11ZCV000SV8AV
       - YM_ZEROCONF_INTERFACES=192.168.1.161
+      - YM_RESTART_INTERVAL_SECONDS=3600  # 0 - disable
     network_mode: host
     restart: unless-stopped
 ```
