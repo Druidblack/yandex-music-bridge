@@ -1,22 +1,26 @@
 # Yandex Music Bridge
 
-We receive the Yandex music playback status as well as from smart speakers that are on the same local network as the program being launched.
+Получаем информацию о статусе воспроизведения Яндекс Музыки в браузере, от умных колонок, подключенных к той же локальной сети где работает программа и из приложения Яндекс музыка для ПК.
 
-it is necessary for https://github.com/FoxxMD/multi-scrobbler
+Это нужно для отправки информации в https://github.com/FoxxMD/multi-scrobbler
 
-An easy way to get a token. You can get a token for Yandex using https://chromewebstore.google.com/detail/yandex-music-token/lcbjeookjibfhjjopieifgjnhlegmkib
+Для получения информации о воспроизведении из браузера нам нужен токен. Простой способ получения токена https://chromewebstore.google.com/detail/yandex-music-token/lcbjeookjibfhjjopieifgjnhlegmkib
 
 <img width="516" height="357" alt="image" src="https://github.com/user-attachments/assets/de9111ee-3ca4-4ffa-80d7-f1dadc1c5043" />
 
-Copy the token (Скопировать токен)
+Скопировать токен
 
-All available ways to get a token https://yandex-music.readthedocs.io/en/main/token.html
+Все способы получения токена https://yandex-music.readthedocs.io/en/main/token.html
 
-The playback status cannot be obtained from the **Yandex Navigator**.
+Информация о воспроизведении не получается из **Яндекс Навигатора**.
 
-YM_STEREO_GROUPS=L015A0B0076GRV|L11ZCV000SV8AV - if there is a stereo pair
+YM_STEREO_GROUPS=L015A0B0076GRV|L11ZCV000SV8AV - если у вас есть стереопара, что бы не дублировалось воспроизведение.
 
-YM_ZEROCONF_INTERFACES=192.168.1.161 - host address
+YM_ZEROCONF_INTERFACES=192.168.1.161 - адрес хоста
+
+YM_DESKTOP_PLAYERS - адрес и порт пк на котормо запускается приложение Яндекс музыка
+
+Инструкция как подключить приложения Яндекс Музыка https://github.com/Druidblack/yandex-music-desktop-home-assistant
 
 ```
 services:
