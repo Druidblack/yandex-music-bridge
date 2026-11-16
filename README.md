@@ -35,6 +35,9 @@ services:
       - YM_STEREO_GROUPS=L015A0B0076GRV|L11ZCV000SV8AV
       - YM_ZEROCONF_INTERFACES=192.168.1.161
       - YM_RESTART_INTERVAL_SECONDS=3600  # 0 - disable
+      - YM_DESKTOP_PLAYERS=Основной ПК@192.168.1.95:19222,Ноутбук@192.168.1.96:19222
+      - YM_DESKTOP_POLL_INTERVAL=20
+      - YM_DESKTOP_RETRY_INTERVAL=10
     network_mode: host
     restart: unless-stopped
 ```
