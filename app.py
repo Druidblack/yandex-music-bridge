@@ -5,6 +5,7 @@ import json
 import logging
 import os
 import random
+import sys
 import re
 import ssl
 import string
@@ -773,6 +774,26 @@ class YandexAudioBridge:
         }
 
 
+async def restart_after_delay(seconds: int) -> None:
+    """Re-execute Python in the same process without restarting the Docker container."""
+    await asyncio.sleep(seconds)
+    # With the project's Docker CMD, this replaces Python at the same PID.  Docker
+    # remains running, but Python, aiohttp and all Yandex connections start fresh.
+    argv = [sys.executable, os.path.abspath(sys.argv[0]), *sys.argv[1:]]
+    while True:
+        LOGGER.warning(
+            "Scheduled application restart after %d seconds: restarting Python in place (Docker remains running)",
+            seconds,
+        )
+        for handler in logging.getLogger().handlers:
+            handler.flush()
+        try:
+            os.execv(sys.executable, argv)
+        except OSError:
+            LOGGER.exception("Unable to restart Python; retrying in 60 seconds")
+            await asyncio.sleep(60)
+
+
 async def create_app() -> web.Application:
     logging.basicConfig(
         level=os.getenv("LOG_LEVEL", "INFO").upper(),
@@ -782,10 +803,17 @@ async def create_app() -> web.Application:
     if token == "":
         raise RuntimeError("YM_TOKEN is required")
     api_key = os.getenv("YM_API_KEY", "").strip()
+    try:
+        restart_interval = int(os.getenv("YM_RESTART_INTERVAL_SECONDS", "3600"))
+    except ValueError as exc:
+        raise ValueError("YM_RESTART_INTERVAL_SECONDS must be a non-negative integer") from exc
+    if restart_interval < 0:
+        raise ValueError("YM_RESTART_INTERVAL_SECONDS must be a non-negative integer")
     bridge = YandexAudioBridge(token)
     app = web.Application()
     app["bridge"] = bridge
     app["api_key"] = api_key
+    app["restart_task"] = None
 
     @web.middleware
     async def auth_middleware(request: web.Request, handler):
@@ -800,8 +828,18 @@ async def create_app() -> web.Application:
 
     async def on_startup(app: web.Application):
         await app["bridge"].start()
+        if restart_interval:
+            app["restart_task"] = asyncio.create_task(restart_after_delay(restart_interval))
+            LOGGER.info("Automatic Python application restart enabled: every %d seconds", restart_interval)
+        else:
+            LOGGER.info("Automatic Python application restart disabled")
 
     async def on_cleanup(app: web.Application):
+        restart_task = app["restart_task"]
+        if restart_task is not None:
+            restart_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await restart_task
         await app["bridge"].stop()
 
     app.on_startup.append(on_startup)
