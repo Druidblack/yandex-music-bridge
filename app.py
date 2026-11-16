@@ -18,6 +18,8 @@ from aiohttp import web, ClientSession, ClientTimeout, WSMsgType, ClientWebSocke
 from yandex_music import Client
 from zeroconf import ServiceBrowser, ServiceStateChange, Zeroconf
 
+from desktop_players import DesktopPlayerWatcher, parse_desktop_players
+
 LOGGER = logging.getLogger("yandex_audio_bridge")
 
 
@@ -505,6 +507,11 @@ class YandexAudioBridge:
         self.enable_music = env_bool("YM_ENABLE_MUSIC", True)
         self.enable_stations = env_bool("YM_ENABLE_STATIONS", True)
         self.zeroconf_interfaces = env_csv("YM_ZEROCONF_INTERFACES")
+        self.desktop_configs = parse_desktop_players(os.getenv("YM_DESKTOP_PLAYERS", ""))
+        self.desktop_poll_interval = float(os.getenv("YM_DESKTOP_POLL_INTERVAL", "20"))
+        self.desktop_retry_interval = float(os.getenv("YM_DESKTOP_RETRY_INTERVAL", "10"))
+        if self.desktop_poll_interval <= 0 or self.desktop_retry_interval <= 0:
+            raise ValueError("YM_DESKTOP_POLL_INTERVAL and YM_DESKTOP_RETRY_INTERVAL must be positive")
         self.push_ttl = float(os.getenv("YM_PUSH_TTL", "45"))
         self.player_ttl = float(os.getenv("YM_PLAYER_TTL", "180"))
         self.queue_cache_ttl = float(os.getenv("YM_QUEUE_CACHE_TTL", "3"))
@@ -516,6 +523,7 @@ class YandexAudioBridge:
         self.ynison: Optional[YnisonWatcher] = None
         self.discovery: Optional[LocalStationDiscovery] = None
         self.station_connections: dict[str, LocalStationConnection] = {}
+        self.desktop_watchers: dict[str, DesktopPlayerWatcher] = {}
         self.players: dict[str, dict[str, Any]] = {}
         self.stereo_groups = parse_stereo_groups_env(os.getenv("YM_STEREO_GROUPS", "").strip())
         self.loop: Optional[asyncio.AbstractEventLoop] = None
@@ -541,9 +549,22 @@ class YandexAudioBridge:
             self.discovery = LocalStationDiscovery(self._handle_station_found, self.zeroconf_interfaces)
             self.discovery.start()
             LOGGER.info("Local Yandex Station discovery started")
+        for config in self.desktop_configs:
+            watcher = DesktopPlayerWatcher(
+                config, self._handle_desktop_update,
+                poll_interval=self.desktop_poll_interval,
+                retry_interval=self.desktop_retry_interval,
+            )
+            self.desktop_watchers[config.player_id] = watcher
+            watcher.start()
+            LOGGER.info("Yandex Music Desktop monitoring: %s at %s:%s", config.name, config.host, config.port)
         self._started = True
 
     async def stop(self) -> None:
+        for watcher in list(self.desktop_watchers.values()):
+            with suppress(Exception):
+                await watcher.stop()
+        self.desktop_watchers.clear()
         if self.ynison:
             with suppress(Exception):
                 await self.ynison.stop()
@@ -565,6 +586,13 @@ class YandexAudioBridge:
         data["last_seen"] = time.monotonic()
         data["stale"] = False
         self.players[player_id] = data
+
+    def _handle_desktop_update(self, player_id: str, payload: Optional[dict[str, Any]]) -> None:
+        if payload is None:
+            # Do not keep an old desktop track as if it were still playing.
+            self.players.pop(player_id, None)
+        else:
+            self._set_player(player_id, payload)
 
     def _handle_music_push(self, data: Optional[dict[str, Any]]) -> None:
         self._last_push_ts = time.monotonic()
@@ -767,6 +795,8 @@ class YandexAudioBridge:
             "ynison_enabled": self.enable_ynison,
             "ynison_connected": self.ynison is not None,
             "known_station_connections": len(self.station_connections),
+            "desktop_enabled": bool(self.desktop_configs),
+            "desktop_players": [watcher.health() for watcher in self.desktop_watchers.values()],
             "players_count": players.get("players_count", 0),
             "last_push_age": (time.monotonic() - self._last_push_ts) if self._last_push_ts else None,
             "last_queue_age": (time.monotonic() - self._last_queue_ts) if self._last_queue_ts else None,
@@ -800,8 +830,8 @@ async def create_app() -> web.Application:
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
     token = os.getenv("YM_TOKEN", "").strip()
-    if token == "":
-        raise RuntimeError("YM_TOKEN is required")
+    if not token and (env_bool("YM_ENABLE_MUSIC", True) or env_bool("YM_ENABLE_STATIONS", True)):
+        raise RuntimeError("YM_TOKEN is required when YM_ENABLE_MUSIC or YM_ENABLE_STATIONS is enabled")
     api_key = os.getenv("YM_API_KEY", "").strip()
     try:
         restart_interval = int(os.getenv("YM_RESTART_INTERVAL_SECONDS", "3600"))
@@ -849,7 +879,12 @@ async def create_app() -> web.Application:
         return web.json_response(await app["bridge"].get_health())
 
     async def now_playing(request: web.Request):
-        return web.json_response(await app["bridge"].get_snapshot())
+        player_id = request.query.get("player_id")
+        if player_id is None:
+            return web.json_response(await app["bridge"].get_snapshot())
+        snapshot = await app["bridge"].get_players_snapshot()
+        match = next((p for p in snapshot["data"] if p["player_id"] == player_id), None)
+        return web.json_response({"ok": True, "source": snapshot["source"], "fresh": snapshot["fresh"], "data": match})
 
     async def players(request: web.Request):
         return web.json_response(await app["bridge"].get_players_snapshot())
