@@ -22,6 +22,11 @@ class FakeCDP:
 
     def __init__(self, *, title="Song A"):
         self.title = title
+        self.artist = "Artist A, Artist B"
+        self.playing = True
+        self.current_time = "1:23"
+        self.total_time = "4:10"
+        self.track_url = "https://music.yandex.ru/album/42/track/1001"
         self.clients = set()
         self.runner = None
         self.port = None
@@ -70,11 +75,11 @@ class FakeCDP:
                         result = {"result": {"value": {
                             "playerReady": True,
                             "trackTitle": self.title,
-                            "trackArtist": "Artist A, Artist B",
-                            "trackUrl": "https://music.yandex.ru/album/42/track/1001",
+                            "trackArtist": self.artist,
+                            "trackUrl": self.track_url,
                             "coverUrl": "https://avatars.yandex.net/get-music/cover",
-                            "currentTime": "1:23", "totalTime": "4:10",
-                            "playing": True, "volumePercent": 50,
+                            "currentTime": self.current_time, "totalTime": self.total_time,
+                            "playing": self.playing, "volumePercent": 50,
                             "liked": True, "muted": False,
                         }}}
                 await ws.send_json({"id": msg["id"], "result": result})
@@ -82,11 +87,17 @@ class FakeCDP:
             self.clients.discard(ws)
         return ws
 
-    async def notify(self, *, title):
+    async def notify(self, *, title, playing=False, current_time="00:02"):
+        self.title = title
+        self.artist = "Push Artist"
+        self.playing = playing
+        self.current_time = current_time
+        self.total_time = "04:00"
+        self.track_url = "https://music.yandex.ru/album/42"
         snapshot = {"playerReady": True, "trackTitle": title,
-                    "trackArtist": "Push Artist", "playing": False,
+                    "trackArtist": "Push Artist", "playing": playing,
                     "trackUrl": "https://music.yandex.ru/album/42",
-                    "currentTime": "00:02", "totalTime": "04:00"}
+                    "currentTime": current_time, "totalTime": "04:00"}
         for ws in list(self.clients):
             await ws.send_json({"method": "Runtime.bindingCalled", "params": {
                 "name": "ymBridgeCdpNotify", "payload": json.dumps(snapshot),
@@ -110,6 +121,36 @@ class DesktopUnitTests(unittest.TestCase):
         for invalid in ["bad", "name@host:0", "name@host:90000", "https://example.com:22", "name@x/a:22"]:
             with self.subTest(invalid=invalid), self.assertRaises(ValueError):
                 parse_desktop_players(invalid)
+
+    def test_multi_scrobbler_pause_adapter_does_not_mutate_others(self):
+        import types
+        from unittest.mock import patch
+        stub_yandex = types.ModuleType("yandex_music")
+        stub_yandex.Client = object
+        stub_zeroconf = types.ModuleType("zeroconf")
+        for name in ("ServiceBrowser", "ServiceStateChange", "Zeroconf"):
+            setattr(stub_zeroconf, name, object)
+        with patch.dict(sys.modules, {"yandex_music": stub_yandex, "zeroconf": stub_zeroconf}):
+            from app import multiscrobbler_pause_compat
+
+        entries = [
+            {"player_id": "desktop:a:1", "source": "desktop-cdp", "paused": True, "progress_ms": 2000},
+            {"player_id": "desktop:b:1", "source": "desktop-cdp", "paused": True, "progress_ms": 8000},
+            {"player_id": "desktop:c:1", "source": "desktop-cdp", "paused": False, "progress_ms": 1000},
+            {"player_id": "station:x", "source": "station-local", "paused": True, "progress_ms": 6000},
+        ]
+        original = {"data": entries, "primary": entries[0], "players_count": 4}
+        transformed = multiscrobbler_pause_compat(original)
+        self.assertIsNot(transformed, original)
+        self.assertIsNot(transformed["data"][0], original["data"][0])
+        self.assertEqual(transformed["players_count"], 4)
+        self.assertEqual([e["source"] for e in transformed["data"]],
+                         ["station-local", "station-local", "desktop-cdp", "station-local"])
+        self.assertEqual(transformed["primary"], transformed["data"][0])
+        self.assertEqual([e["source"] for e in original["data"]],
+                         ["desktop-cdp", "desktop-cdp", "desktop-cdp", "station-local"])
+        self.assertEqual([e["player_id"] for e in transformed["data"]],
+                         [e["player_id"] for e in original["data"]])
 
     def test_payload_fields(self):
         cfg = DesktopConfig("Office", "192.168.1.95", 19222)
@@ -228,6 +269,31 @@ class DesktopLiveTests(unittest.IsolatedAsyncioTestCase):
                         health = await get("/health")
                         self.assertTrue(health["desktop_players"][0]["online"])
                         self.assertFalse(health["music_enabled"])
+                        # Multi-Scrobbler's current Yandex Bridge source ignores
+                        # paused for desktop-cdp, but supports it for station-local.
+                        # Verify /players uses the compatibility adapter without
+                        # altering the internal source or the direct API.
+                        await self.cdp.notify(title="Song A", playing=False, current_time="01:23")
+                        await eventually(lambda: app["bridge"].players.get(pid, {}).get("paused") is True)
+                        paused = (await get("/players"))["primary"]
+                        self.assertTrue(paused["paused"])
+                        self.assertEqual(paused["source"], "station-local")
+                        self.assertEqual(paused["actual_source"], "desktop-cdp")
+                        self.assertEqual(paused["progress_ms"], 83000)
+                        self.assertEqual(paused["player_id"], pid)
+                        self.assertEqual((await get("/now-playing?player_id=" + pid))["data"]["source"], "desktop-cdp")
+                        await asyncio.sleep(0.1)
+                        self.assertEqual((await get("/players"))["primary"]["progress_ms"], 83000)
+
+                        await self.cdp.notify(title="Song A", playing=True, current_time="01:24")
+                        await eventually(lambda: app["bridge"].players.get(pid, {}).get("paused") is False and
+                                         app["bridge"].players.get(pid, {}).get("progress_ms") == 84000)
+                        resumed = (await get("/players"))["primary"]
+                        self.assertFalse(resumed["paused"])
+                        self.assertEqual(resumed["source"], "desktop-cdp")
+                        self.assertEqual(resumed["progress_ms"], 84000)
+                        self.assertEqual(resumed["player_id"], pid)
+
                         await self.cdp.stop()
                         await eventually(lambda: not app["bridge"].players)
                         self.assertEqual((await get("/players"))["players_count"], 0)

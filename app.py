@@ -804,6 +804,36 @@ class YandexAudioBridge:
         }
 
 
+def multiscrobbler_pause_compat(snapshot: dict[str, Any]) -> dict[str, Any]:
+    """Adapt paused desktop players for Multi-Scrobbler's current ymbridge source.
+
+    Its YandexMusicBridgeSource currently honors ``paused`` only for entries
+    with ``source == 'station-local'``. For all other sources it synthesizes a
+    permanently playing state and increments the playback position, regardless
+    of ``paused``. On the /players endpoint only, advertise paused desktop
+    entries as station-local. Keep their real source available in
+    ``actual_source``. The internal player registry and /now-playing API
+    continue to identify these as ``desktop-cdp``.
+
+    A new snapshot is returned; neither the input nor its players are mutated.
+    This is a temporary backward-compatibility workaround, not a station.
+    """
+    players = []
+    for payload in snapshot["data"]:
+        if payload.get("source") == "desktop-cdp" and payload.get("paused") is True:
+            adjusted = dict(payload)
+            adjusted["source"] = "station-local"
+            adjusted["actual_source"] = "desktop-cdp"
+            players.append(adjusted)
+        else:
+            players.append(payload)
+    adjusted_snapshot = dict(snapshot)
+    adjusted_snapshot["data"] = players
+    # The API's primary must be drawn from the same adjusted list.
+    adjusted_snapshot["primary"] = players[0] if players else None
+    return adjusted_snapshot
+
+
 async def restart_after_delay(seconds: int) -> None:
     """Re-execute Python in the same process without restarting the Docker container."""
     await asyncio.sleep(seconds)
@@ -844,6 +874,7 @@ async def create_app() -> web.Application:
     app["bridge"] = bridge
     app["api_key"] = api_key
     app["restart_task"] = None
+    app["multiscrobbler_pause_compat"] = env_bool("YM_MULTISCROBBLER_PAUSE_COMPAT", True)
 
     @web.middleware
     async def auth_middleware(request: web.Request, handler):
@@ -887,7 +918,10 @@ async def create_app() -> web.Application:
         return web.json_response({"ok": True, "source": snapshot["source"], "fresh": snapshot["fresh"], "data": match})
 
     async def players(request: web.Request):
-        return web.json_response(await app["bridge"].get_players_snapshot())
+        snapshot = await app["bridge"].get_players_snapshot()
+        if app["multiscrobbler_pause_compat"]:
+            snapshot = multiscrobbler_pause_compat(snapshot)
+        return web.json_response(snapshot)
 
     app.router.add_get("/health", health)
     app.router.add_get("/now-playing", now_playing)
